@@ -78,228 +78,146 @@ app.post('/voice/start/:leadId', (req, res) => {
   redirect(res, `${BASE_URL}/voice/greeting/${req.params.leadId}`);
 });
 
+// ── HELPER: Yes/No gather ────────────────────────────────────
+function yesNoGather(twiml, action, leadId) {
+  const g = twiml.gather({
+    input: 'speech dtmf',
+    action,
+    speechTimeout: '2',
+    timeout: 7,
+    numDigits: 1,
+  });
+  g.say({ voice: 'Polly.Joanna' }, 'Press 1 for yes, or 2 for no.');
+  twiml.redirect(`${BASE_URL}/voice/no-response/${leadId}`);
+}
+
+function isYes(req) {
+  const s = (req.body.SpeechResult || '').toLowerCase();
+  const d = req.body.Digits || '';
+  return d === '1' || !!s.match(/yes|yeah|sure|ok|correct|right|good|fine|ready|yep|absolutely|of course/);
+}
+
+function isNo(req) {
+  const s = (req.body.SpeechResult || '').toLowerCase();
+  const d = req.body.Digits || '';
+  return d === '2' || !!s.match(/no|nope|not|busy|later|cant|cannot|negative|dont|don't/);
+}
+
 // ── STEP 1: GREETING ──────────────────────────────────────────
 app.all('/voice/greeting/:leadId', (req, res) => {
   const lead = leads[req.params.leadId] || {};
   const name = (lead.name || 'there').split(' ')[0];
-
   const twiml = new twilio.twiml.VoiceResponse();
+
   twiml.say({ voice: 'Polly.Joanna' },
-    `Hello, may I speak with ${name}? ` +
-    `This is Lara, the AI Lead Assistant from Data Direct Group. ` +
-    `Thanks so much for your interest in the ${lead.model || 'Exeed SUV'}. ` +
-    `I just have a few quick questions to make sure we match you with the right consultant. ` +
+    `Hello ${name}! This is Lara, AI assistant from Data Direct Group. ` +
+    `You recently showed interest in the ${lead.model || 'Exeed SUV'}. ` +
+    `I have just 4 quick yes or no questions — takes less than one minute. ` +
     `Is now a good time?`
   );
-
-  const gather = twiml.gather({
-    input: 'speech dtmf',
-    action: `${BASE_URL}/voice/confirm-time/${req.params.leadId}`,
-    speechTimeout: '3',
-    timeout: 8,
-    numDigits: 1,
-  });
-  gather.say({ voice: 'Polly.Joanna' }, 'Press 1 or say yes if now is a good time.');
-
-  // No response handler
-  twiml.redirect(`${BASE_URL}/voice/no-response/${req.params.leadId}`);
+  yesNoGather(twiml, `${BASE_URL}/voice/q1/${req.params.leadId}`, req.params.leadId);
   res.type('text/xml').send(twiml.toString());
 });
 
-// ── STEP 2: CONFIRM TIME ──────────────────────────────────────
-app.all('/voice/confirm-time/:leadId', (req, res) => {
-  const speech = (req.body.SpeechResult || '').toLowerCase();
-  const digit  = req.body.Digits || '';
-  const state  = callState[req.params.leadId] || {};
-
-  const isYes = speech.match(/yes|sure|ok|good|fine|ready|go|now/) || digit === '1';
-  const isNo  = speech.match(/no|busy|later|bad|not now|call back/);
-
-  if (isNo) {
-    // Schedule callback
+// ── Q1: STILL INTERESTED? ─────────────────────────────────────
+app.all('/voice/q1/:leadId', (req, res) => {
+  if (isNo(req)) {
     const twiml = new twilio.twiml.VoiceResponse();
     twiml.say({ voice: 'Polly.Joanna' },
-      `No problem at all! I will have one of our Exeed specialists call you back at a more convenient time. ` +
-      `Thank you for your time and have a wonderful day!`
+      `No problem! Our team will reach out at a better time. Have a great day!`
     );
     twiml.hangup();
     leads[req.params.leadId].status = 'Callback Requested';
     return res.type('text/xml').send(twiml.toString());
   }
-
-  // Proceed to interest question
-  redirect(res, `${BASE_URL}/voice/interest/${req.params.leadId}`);
-});
-
-// ── STEP 3: CONFIRM INTEREST ──────────────────────────────────
-app.all('/voice/interest/:leadId', (req, res) => {
-  const lead = leads[req.params.leadId] || {};
+  leads[req.params.leadId].responses = leads[req.params.leadId].responses || {};
   const twiml = new twilio.twiml.VoiceResponse();
-
   twiml.say({ voice: 'Polly.Joanna' },
-    `Great! Could you briefly tell me what made you reach out about the ${lead.model || 'Exeed SUV'} today?`
+    `Great! Question 1: Are you still interested in purchasing the ${(leads[req.params.leadId] || {}).model || 'Exeed SUV'}?`
   );
-
-  const gather = twiml.gather({
-    input: 'speech',
-    action: `${BASE_URL}/voice/budget/${req.params.leadId}`,
-    speechTimeout: '4',
-    timeout: 10,
-  });
-
-  twiml.redirect(`${BASE_URL}/voice/no-response/${req.params.leadId}`);
+  yesNoGather(twiml, `${BASE_URL}/voice/q2/${req.params.leadId}`, req.params.leadId);
   res.type('text/xml').send(twiml.toString());
 });
 
-// ── STEP 4: BUDGET ────────────────────────────────────────────
-app.all('/voice/budget/:leadId', (req, res) => {
-  const speech = req.body.SpeechResult || '';
-  if (speech) leads[req.params.leadId].responses.interest = speech;
-
+// ── Q2: BUDGET READY? ─────────────────────────────────────────
+app.all('/voice/q2/:leadId', (req, res) => {
+  leads[req.params.leadId].responses.interested = isYes(req);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
-    `That sounds great. Now, what budget range have you allocated for this kind of purchase?`
+    `Question 2: Do you have your budget ready for this purchase?`
   );
-
-  const gather = twiml.gather({
-    input: 'speech',
-    action: `${BASE_URL}/voice/authority/${req.params.leadId}`,
-    speechTimeout: '4',
-    timeout: 10,
-  });
-
-  twiml.redirect(`${BASE_URL}/voice/no-response/${req.params.leadId}`);
+  yesNoGather(twiml, `${BASE_URL}/voice/q3/${req.params.leadId}`, req.params.leadId);
   res.type('text/xml').send(twiml.toString());
 });
 
-// ── STEP 5: AUTHORITY ─────────────────────────────────────────
-app.all('/voice/authority/:leadId', (req, res) => {
-  const speech = req.body.SpeechResult || '';
-  if (speech) leads[req.params.leadId].responses.budget = speech;
-
+// ── Q3: DECISION MAKER? ───────────────────────────────────────
+app.all('/voice/q3/:leadId', (req, res) => {
+  leads[req.params.leadId].responses.budgetReady = isYes(req);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
-    `Perfect. Are you the main decision maker for this purchase, or is there someone else involved?`
+    `Question 3: Are you the main decision maker for this purchase?`
   );
-
-  const gather = twiml.gather({
-    input: 'speech',
-    action: `${BASE_URL}/voice/pain/${req.params.leadId}`,
-    speechTimeout: '4',
-    timeout: 10,
-  });
-
-  twiml.redirect(`${BASE_URL}/voice/no-response/${req.params.leadId}`);
+  yesNoGather(twiml, `${BASE_URL}/voice/q4/${req.params.leadId}`, req.params.leadId);
   res.type('text/xml').send(twiml.toString());
 });
 
-// ── STEP 6: NEED / PAIN ───────────────────────────────────────
-app.all('/voice/pain/:leadId', (req, res) => {
-  const speech = req.body.SpeechResult || '';
-  if (speech) leads[req.params.leadId].responses.authority = speech;
-
+// ── Q4: READY WITHIN 3 MONTHS? ───────────────────────────────
+app.all('/voice/q4/:leadId', (req, res) => {
+  leads[req.params.leadId].responses.decisionMaker = isYes(req);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
-    `Good to know. What specific needs or goals are you trying to meet with your next vehicle?`
+    `Last question: Are you planning to purchase within the next 3 months?`
   );
-
-  const gather = twiml.gather({
-    input: 'speech',
-    action: `${BASE_URL}/voice/timeline/${req.params.leadId}`,
-    speechTimeout: '4',
-    timeout: 10,
-  });
-
-  twiml.redirect(`${BASE_URL}/voice/no-response/${req.params.leadId}`);
+  yesNoGather(twiml, `${BASE_URL}/voice/q-human/${req.params.leadId}`, req.params.leadId);
   res.type('text/xml').send(twiml.toString());
 });
 
-// ── STEP 7: TIMELINE ─────────────────────────────────────────
-app.all('/voice/timeline/:leadId', (req, res) => {
-  const speech = req.body.SpeechResult || '';
-  if (speech) leads[req.params.leadId].responses.need = speech;
-
-  const twiml = new twilio.twiml.VoiceResponse();
-  twiml.say({ voice: 'Polly.Joanna' },
-    `Almost done. When are you looking to move forward with this purchase?`
-  );
-
-  const gather = twiml.gather({
-    input: 'speech',
-    action: `${BASE_URL}/voice/human-check/${req.params.leadId}`,
-    speechTimeout: '4',
-    timeout: 10,
-  });
-
-  twiml.redirect(`${BASE_URL}/voice/no-response/${req.params.leadId}`);
-  res.type('text/xml').send(twiml.toString());
-});
-
-// ── STEP 8: HUMAN AGENT CHECK ────────────────────────────────
-app.all('/voice/human-check/:leadId', (req, res) => {
+// ── HUMAN AGENT REQUEST CHECK ────────────────────────────────
+app.all('/voice/q-human/:leadId', (req, res) => {
+  leads[req.params.leadId].responses.soonPurchase = isYes(req);
   const speech = (req.body.SpeechResult || '').toLowerCase();
-  if (speech) leads[req.params.leadId].responses.timeline = speech;
 
-  // Check if customer wants human agent
-  const wantsHuman = speech.match(/human|agent|person|representative|speak to someone|real person|transfer/);
-
-  if (wantsHuman) {
+  if (speech.match(/human|agent|person|transfer|speak to someone|real/)) {
     return redirect(res, `${BASE_URL}/voice/transfer/${req.params.leadId}`);
   }
-
   redirect(res, `${BASE_URL}/voice/qualify/${req.params.leadId}`);
 });
 
-// ── STEP 9: QUALIFICATION DECISION ──────────────────────────
+// ── QUALIFICATION DECISION ───────────────────────────────────
 app.all('/voice/qualify/:leadId', (req, res) => {
   const lead = leads[req.params.leadId] || {};
   const r    = lead.responses || {};
 
-  // Scoring logic
+  // Simple yes/no scoring
   let score = 0;
-  const budget   = (r.budget   || '').toLowerCase();
-  const timeline = (r.timeline || '').toLowerCase();
-  const authority= (r.authority|| '').toLowerCase();
-  const interest = (r.interest || '').toLowerCase();
+  if (r.interested)    score += 25;
+  if (r.budgetReady)   score += 30;
+  if (r.decisionMaker) score += 25;
+  if (r.soonPurchase)  score += 20;
 
-  if (budget.match(/120|150|180|200|250|300|above|high|good/)) score += 30;
-  else if (budget.match(/100|enough|reasonable/)) score += 15;
-
-  if (timeline.match(/month|week|soon|now|ready|quickly|immediate/)) score += 30;
-  else if (timeline.match(/year|later|eventually|maybe/)) score += 10;
-
-  if (authority.match(/yes|i am|myself|me|decision|i decide/)) score += 25;
-  else if (authority.match(/wife|husband|partner|family|together/)) score += 15;
-
-  if (interest.length > 10) score += 15;
-
-  const isQualified = score >= 50;
+  const isQualified = score >= 55;
   leads[req.params.leadId].status      = isQualified ? 'Qualified' : 'Not Qualified';
   leads[req.params.leadId].score       = score;
   leads[req.params.leadId].qualifiedAt = new Date().toISOString();
 
   const twiml = new twilio.twiml.VoiceResponse();
-
   if (isQualified) {
     twiml.say({ voice: 'Polly.Joanna' },
-      `Excellent! Based on what you have shared, you are a great fit for the ${lead.model || 'Exeed'}. ` +
-      `I am going to connect you with one of our dedicated Exeed consultants in ${lead.city || 'your area'} ` +
-      `who will reach out to arrange a personalised test drive and exclusive offer. ` +
-      `You should expect a call within the next 2 hours. ` +
-      `Thank you so much and have a wonderful day!`
+      `Excellent! You are all set. ` +
+      `A dedicated Exeed consultant will call you within 2 hours ` +
+      `to arrange a personalised test drive and exclusive offer in ${lead.city || 'your area'}. ` +
+      `Thank you ${(lead.name||'').split(' ')[0]} and have a wonderful day!`
     );
   } else {
     twiml.say({ voice: 'Polly.Joanna' },
-      `Thank you so much for your time today. ` +
-      `Based on our conversation, I will pass your details to our team for the right follow-up. ` +
-      `Thank you for considering Exeed and have a great day!`
+      `Thank you for your time. ` +
+      `Our team will be in touch when the timing is right. ` +
+      `Have a great day!`
     );
   }
-
   twiml.hangup();
   res.type('text/xml').send(twiml.toString());
-
-  console.log(`[QUALIFY] Lead ${req.params.leadId}: ${isQualified ? 'QUALIFIED' : 'NOT QUALIFIED'} | Score: ${score}`);
+  console.log(`[QUALIFY] ${req.params.leadId}: ${isQualified?'QUALIFIED':'NOT QUALIFIED'} | Score: ${score} | Responses: ${JSON.stringify(r)}`);
 });
 
 // ── HUMAN AGENT TRANSFER ──────────────────────────────────────
