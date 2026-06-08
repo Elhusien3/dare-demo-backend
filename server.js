@@ -55,9 +55,23 @@ app.post('/call', async (req, res) => {
   }
 });
 
+// ── ENSURE LEAD EXISTS (handles direct Twilio calls without /call endpoint) ──
+function ensureLead(leadId) {
+  if (!leads[leadId]) {
+    leads[leadId] = {
+      name: 'Customer', model: 'Exeed SUV', city: 'UAE',
+      budget: 'Standard', timeline: 'Soon',
+      status: 'In Progress', responses: {}, startTime: new Date().toISOString()
+    };
+    callState[leadId] = { step: 'greeting', responses: {}, noResponseCount: 0 };
+  }
+  if (!leads[leadId].responses) leads[leadId].responses = {};
+  return leads[leadId];
+}
+
 // ── ANSWERING MACHINE DETECTION ───────────────────────────────
 app.post('/voice/start/:leadId', (req, res) => {
-  const lead = leads[req.params.leadId] || {};
+  const lead = ensureLead(req.params.leadId);
   const name = (lead.name || 'there').split(' ')[0];
   const amdStatus = req.body.AnsweredBy;
 
@@ -105,12 +119,12 @@ function isNo(req) {
 
 // ── STEP 1: GREETING ──────────────────────────────────────────
 app.all('/voice/greeting/:leadId', (req, res) => {
-  const lead = leads[req.params.leadId] || {};
+  const lead = ensureLead(req.params.leadId);
   const name = (lead.name || 'there').split(' ')[0];
   const twiml = new twilio.twiml.VoiceResponse();
 
   twiml.say({ voice: 'Polly.Joanna' },
-    `Hello ${name}! This is Lara, AI assistant from Data Direct Group. ` +
+    `Hello ${name}! This is Lili, AI assistant from Data Direct Group. ` +
     `You recently showed interest in the ${lead.model || 'Exeed SUV'}. ` +
     `I have just 4 quick yes or no questions — takes less than one minute. ` +
     `Is now a good time?`
@@ -121,6 +135,7 @@ app.all('/voice/greeting/:leadId', (req, res) => {
 
 // ── Q1: STILL INTERESTED? ─────────────────────────────────────
 app.all('/voice/q1/:leadId', (req, res) => {
+  ensureLead(req.params.leadId);
   if (isNo(req)) {
     const twiml = new twilio.twiml.VoiceResponse();
     twiml.say({ voice: 'Polly.Joanna' },
@@ -130,10 +145,10 @@ app.all('/voice/q1/:leadId', (req, res) => {
     leads[req.params.leadId].status = 'Callback Requested';
     return res.type('text/xml').send(twiml.toString());
   }
-  leads[req.params.leadId].responses = leads[req.params.leadId].responses || {};
+  ensureLead(req.params.leadId);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
-    `Great! Question 1: Are you still interested in purchasing the ${(leads[req.params.leadId] || {}).model || 'Exeed SUV'}?`
+    `Great! Question 1: Are you still interested in purchasing the ${ensureLead(req.params.leadId).model || 'Exeed SUV'}?`
   );
   yesNoGather(twiml, `${BASE_URL}/voice/q2/${req.params.leadId}`, req.params.leadId);
   res.type('text/xml').send(twiml.toString());
@@ -141,6 +156,7 @@ app.all('/voice/q1/:leadId', (req, res) => {
 
 // ── Q2: BUDGET READY? ─────────────────────────────────────────
 app.all('/voice/q2/:leadId', (req, res) => {
+  ensureLead(req.params.leadId);
   leads[req.params.leadId].responses.interested = isYes(req);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
@@ -152,6 +168,7 @@ app.all('/voice/q2/:leadId', (req, res) => {
 
 // ── Q3: DECISION MAKER? ───────────────────────────────────────
 app.all('/voice/q3/:leadId', (req, res) => {
+  ensureLead(req.params.leadId);
   leads[req.params.leadId].responses.budgetReady = isYes(req);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
@@ -163,6 +180,7 @@ app.all('/voice/q3/:leadId', (req, res) => {
 
 // ── Q4: READY WITHIN 3 MONTHS? ───────────────────────────────
 app.all('/voice/q4/:leadId', (req, res) => {
+  ensureLead(req.params.leadId);
   leads[req.params.leadId].responses.decisionMaker = isYes(req);
   const twiml = new twilio.twiml.VoiceResponse();
   twiml.say({ voice: 'Polly.Joanna' },
@@ -174,6 +192,7 @@ app.all('/voice/q4/:leadId', (req, res) => {
 
 // ── HUMAN AGENT REQUEST CHECK ────────────────────────────────
 app.all('/voice/q-human/:leadId', (req, res) => {
+  ensureLead(req.params.leadId);
   leads[req.params.leadId].responses.soonPurchase = isYes(req);
   const speech = (req.body.SpeechResult || '').toLowerCase();
 
@@ -185,7 +204,7 @@ app.all('/voice/q-human/:leadId', (req, res) => {
 
 // ── QUALIFICATION DECISION ───────────────────────────────────
 app.all('/voice/qualify/:leadId', (req, res) => {
-  const lead = leads[req.params.leadId] || {};
+  const lead = ensureLead(req.params.leadId);
   const r    = lead.responses || {};
 
   // Simple yes/no scoring
@@ -222,7 +241,7 @@ app.all('/voice/qualify/:leadId', (req, res) => {
 
 // ── HUMAN AGENT TRANSFER ──────────────────────────────────────
 app.all('/voice/transfer/:leadId', (req, res) => {
-  const lead = leads[req.params.leadId] || {};
+  const lead = ensureLead(req.params.leadId);
   leads[req.params.leadId].status           = 'Transferred — Human Agent';
   leads[req.params.leadId].ccAgent          = 'Arif Mohamed';
   leads[req.params.leadId].salesOwner       = 'Exeed Sales Team';
@@ -300,6 +319,23 @@ function redirect(res, url) {
   twiml.redirect(url);
   res.type('text/xml').send(twiml.toString());
 }
+
+// ── GLOBAL ERROR HANDLER — returns valid TwiML instead of crashing ──
+app.use((err, req, res, next) => {
+  console.error('Error:', err.message);
+  const twiml = new twilio.twiml.VoiceResponse();
+  twiml.say({ voice: 'Polly.Joanna' },
+    'I am sorry, something went wrong. Please call us back or we will reach out to you shortly. Goodbye!'
+  );
+  twiml.hangup();
+  res.type('text/xml').send(twiml.toString());
+});
+
+// ── WRAP ALL ROUTES IN TRY-CATCH ──────────────────────────────
+// Replace any uncaught promise rejections with graceful TwiML
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+});
 
 // ── START ─────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
